@@ -12,6 +12,10 @@ import readline from 'readline'
 
 const execPromise = promisify(exec)
 
+// Configuración para leer tu número desde la consola de Termux
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+const question = (text) => new Promise((resolve) => rl.question(text, resolve))
+
 const decodeJid = (jid) => {
     if (!jid) return jid
     if (/:\d+@/gi.test(jid)) {
@@ -21,21 +25,15 @@ const decodeJid = (jid) => {
     return jid
 }
 
+// ==========================================
+// FUNCIÓN DE VALIDACIÓN UNIVERSAL DE NÚMEROS
+// ==========================================
 async function isValidPhoneNumber(number) {
     try {
-        let num = String(number).trim()
-        num = num.replace(/[\s\-()]/g, '')
-        if (!num.startsWith('+')) num = '+' + num
-        if (num.startsWith('+52')) {
-            const digits = num.substring(3)
-            if (num.startsWith('+521') && num.length === 13) return /^\+521[0-9]{10}$/.test(num)
-            else if (num.length === 12) {
-                const numDigits = digits.replace(/\D/g, '')
-                if (numDigits.length === 10) return true
-            }
-            else if (digits.length === 10 && /^[0-9]{10}$/.test(digits)) return true
-        }
-        return /^\+[1-9]\d{9,14}$/.test(num)
+        let num = String(number).trim().replace(/[\s\-()+]/g, '')
+        const isNumeric = /^\d+$/.test(num)
+        const isLengthValid = num.length >= 7 && num.length <= 15
+        return isNumeric && isLengthValid
     } catch (error) {
         return false
     }
@@ -69,10 +67,9 @@ async function descargarYT(youtubeUrl, formato = 'mp3') {
 
     } else {
         try {
-            const res = await fetch(`https://api.botcahx.eu.org/api/dowloader/ytmp4?url=${urlCompleta}&apikey=xyz`)
+            const res = await fetch(`https://api.vreden.web.id/api/ytmp4?url=${urlCompleta}`)
             const json = await res.json()
-            if (json.status && json.result?.url) return { tipo: 'url', stream: json.result.url }
-            if (json.result?.video) return { tipo: 'url', stream: json.result.video }
+            if (json.status === 200 && json.result?.downloadUrl) return { tipo: 'url', stream: json.result.downloadUrl }
         } catch (e) {
             console.log(chalk.yellow('[API Video Falló, usando yt-dlp local...]'))
         }
@@ -83,17 +80,12 @@ async function descargarYT(youtubeUrl, formato = 'mp3') {
     }
 }
 
-// Interfaz de lectura para la consola de Termux
-const question = (text) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-    return new Promise((resolve) => rl.question(text, (answer) => { rl.close(); resolve(answer) }))
-}
-
 // ==========================================
 // FUNCIÓN PRINCIPAL DEL BOT
 // ==========================================
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('sessions')
+    const authFolder = 'sessions'
+    const { state, saveCreds } = await useMultiFileAuthState(authFolder)
     const { version } = await fetchLatestBaileysVersion()
     
     console.info = () => {}
@@ -101,43 +93,56 @@ async function startBot() {
     const conn = makeWASocket({
         version,
         logger: P({ level: 'silent' }),
-        printQRInTerminal: false, // Falso para usar exclusivamente el código de vinculación
+        printQRInTerminal: false, 
         auth: { 
             creds: state.creds, 
             keys: makeCacheableSignalKeyStore(state.keys, P({ level: 'silent' })) 
         },
-        browser: ["Termux", "Chrome", "110.0.5481.178"],
+        browser: ["Ubuntu", "Chrome", "125.0.0.0"], // Simulación moderna anti-bloqueos
         syncFullHistory: false,
         markOnlineOnConnect: true
     })
     
     conn.ev.on('creds.update', saveCreds)
 
-    // SOLICITUD DE NÚMERO DIRECTA EN LA CONSOLA DE TERMUX
-    if (!fs.existsSync(`./sessions/creds.json`) && !conn.authState.creds.registered) {
+    // SOLICITUD DE NÚMERO INTERACTIVA Y UNIVERSAL
+    if (!fs.existsSync(`./${authFolder}/creds.json`) && !conn.authState.creds.registered) {
         console.log(chalk.cyan('\n   ======================================'))
         console.log(chalk.cyan('    CONFIGURACIÓN DE VINCULACIÓN (TERMUX)'))
         console.log(chalk.cyan('   ======================================\n'))
         
-        let phoneNumber = await question(chalk.white(' 👉 Ingresa tu número de WhatsApp con código de país (ej: 521234567890):\n > '))
-        phoneNumber = phoneNumber.replace(/\D/g, '')
+        let phoneNumber = ''
+        let valid = false
 
-        if (await isValidPhoneNumber(phoneNumber)) {
-            console.log(chalk.yellow(`\n ➩ Generando código para: +${phoneNumber}...`))
-            setTimeout(async () => {
-                let codeBot = await conn.requestPairingCode(phoneNumber)
+        while (!valid) {
+            phoneNumber = await question(chalk.white(' 👉 Ingresa tu número de WhatsApp con código de país (ej: 50688888888):\n > '))
+            valid = await isValidPhoneNumber(phoneNumber)
+            if (!valid) {
+                console.log(chalk.red(' ❌ Número inválido. Usa solo números incluyendo el código de área.\n'))
+            }
+        }
+
+        const cleanedNumber = phoneNumber.replace(/[\s\-()+]/g, '')
+
+        console.log(chalk.yellow(`\n ➩ Generando código para: +${cleanedNumber}...`))
+        setTimeout(async () => {
+            try {
+                let codeBot = await conn.requestPairingCode(cleanedNumber)
                 codeBot = codeBot.match(/.{1,4}/g)?.join("-") || codeBot
                 console.log(chalk.green('\n   ======================================'))
                 console.log(chalk.green('   TU CÓDIGO DE VINCULACIÓN ES:'))
-                console.log(chalk.white(`       ${codeBot}`))
+                console.log(chalk.white(`   👉   ${codeBot}   👈`))
                 console.log(chalk.green('   ======================================\n'))
-            }, 3000)
-        } else {
-            console.log(chalk.red('\n [!] Número inválido. Reinicia el bot e intenta de nuevo.\n'))
-            process.exit(1)
-        }
+                console.log(chalk.gray(' Introduce este código en tu WhatsApp (Dispositivos vinculados).\n'))
+            } catch (err) {
+                console.error(chalk.red('❌ Error al solicitar el código:'), err)
+            }
+        }, 3000)
     }
 
+    // ==========================================
+    // ESCUCHADOR DE MENSAJES Y COMANDOS
+    // ==========================================
     conn.ev.on('messages.upsert', async (m) => {
         try {
             const msg = m.messages[0]
@@ -336,15 +341,25 @@ async function startBot() {
         } catch (err) { console.error(err) }
     })
 
+    // ==========================================
+    // CONTROL DE CONEXIÓN Y RECONEXIONES
+    // ==========================================
     conn.ev.on('connection.update', (u) => {
         if (u.connection === 'open') {
             console.log(chalk.cyan('\n   ---------------------------------------\n    BOT DE TERMUX INICIADO CORRECTAMENTE\n   ---------------------------------------'))
         }
-        if (u.connection === 'close' && new Boom(u.lastDisconnect?.error)?.output.statusCode !== DisconnectReason.loggedOut) {
-            startBot()
+        if (u.connection === 'close') {
+            const reason = new Boom(u.lastDisconnect?.error)?.output.statusCode
+            if (reason !== DisconnectReason.loggedOut) {
+                console.log(chalk.yellow('🔄 Conexión interrumpida. Reconectando en automático...'))
+                startBot()
+            } else {
+                console.log(chalk.red('❌ Sesión cerrada por WhatsApp. Limpiando archivos...'))
+                if (fs.existsSync(authFolder)) fs.rmSync(authFolder, { recursive: true, force: true })
+                process.exit(0)
+            }
         }
     })
 }
 
-startBot()
-
+startBot().catch(err => console.error('Fallo crítico al arrancar:', err))
